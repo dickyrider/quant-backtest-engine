@@ -1,5 +1,9 @@
 # Crypto Quant Engine – Production-Grade Event-Driven Backtesting Framework
 
+<p align="center">
+  <img src="dashboard-preview.jpeg" alt="Interactive Dashboard Preview" width="100%">
+</p>
+
 A from-scratch, event-driven backtesting engine built and battle-tested with real Binance perpetual futures data (ETHUSDT hourly, Nov 2024 – Aug 2025).  
 Designed with production details in mind: slippage, fees, maintenance margin, forced liquidation, dynamic ATR stops, position sizing, etc.
 
