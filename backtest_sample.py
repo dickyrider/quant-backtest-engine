@@ -326,9 +326,7 @@ class Strategy:
 
         #Trend identify
         # strength
-
-
-
+        
         if adx > 25 and adx < 40:
             framework.df.loc[index, 'trend_strength'] = 1
         elif adx > 40:
@@ -458,7 +456,7 @@ best_sharpe = float('-inf')
 
 ratios = np.arange(1,4,1)
 
-csv_file = 'eth_merged_data.csv'
+csv_file = 'eth_hourly.csv' #your price data csv in yfinance format
 start_date = '2024-11-28 00:00:00'
 end_date = '2025-08-31 23:00:00'
 
