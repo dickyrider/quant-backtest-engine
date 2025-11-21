@@ -6,6 +6,7 @@ import ta
 from backtest_engine import framework 
 from ta.volatility import AverageTrueRange
 import talib
+from vbp_calculator import vbp
 
 class Strategy:
     def __init__(self, data, **kwargs):
@@ -27,16 +28,19 @@ class Strategy:
         framework.df.index = pd.to_datetime(framework.df.index, utc=True)
         framework.df['hour'] = framework.df.index.hour 
         framework.df['weekday'] = framework.df.index.weekday
+        framework.df['Mid'] = (framework.df['High'] + framework.df['Low'])/2
+        framework.df['EMA_5'] = framework.df[ticker].ewm(span=5, adjust=False).mean()
+        framework.df['EMA_20'] = framework.df[ticker].ewm(span=20, adjust=False).mean()
+        framework.df['EMA_50'] = framework.df[ticker].ewm(span=50, adjust=False).mean()
+        framework.df['EMA_100'] = framework.df[ticker].ewm(span=100, adjust=False).mean()
+        framework.df['EMA_200'] = framework.df[ticker].ewm(span=200, adjust=False).mean()
 
-        # ATR
-        atr = AverageTrueRange(high=framework.df['High'], low=framework.df['Low'], close=framework.df[ticker], window=14)
-        framework.df['ATR_14'] = atr.average_true_range()  
-
-        # ADX
-        adx_hourly= p_ta.adx(high=framework.df['High'], low=framework.df['Low'], close=framework.df[ticker], length=14)
-        framework.df['ADX'] = adx_hourly['ADX_14']
-        framework.df['+DI'] = adx_hourly['DMP_14']
-        framework.df['-DI'] = adx_hourly['DMN_14'] 
+        # Bollinger Band
+        framework.df['Middle_Band'] = framework.df[ticker].ewm(span=20, adjust=False).mean()
+        std = framework.df[ticker].rolling(window=20).std()
+        framework.df['Upper_Band'] = framework.df['Middle_Band'] + (2 * std)
+        framework.df['Lower_Band'] = framework.df['Middle_Band'] - (2 * std)
+        framework.df['BB_width'] = (framework.df['Upper_Band'] - framework.df['Lower_Band']) / framework.df['Middle_Band']
 
 
         # RSI
@@ -53,29 +57,86 @@ class Strategy:
         framework.df['RSI'] = compute_rsi(framework.df[ticker], period=14)
 
 
-        # 添加 MACD 計算（手動使用 EMA）
+        # ATR
+        atr = AverageTrueRange(high=framework.df['High'], low=framework.df['Low'], close=framework.df[ticker], window=14)
+        framework.df['ATR_14'] = atr.average_true_range()   
+
+        # ADX
+        adx_hourly= p_ta.adx(high=framework.df['High'], low=framework.df['Low'], close=framework.df[ticker], length=14)
+        framework.df['ADX'] = adx_hourly['ADX_14']
+        framework.df['+DI'] = adx_hourly['DMP_14']
+        framework.df['-DI'] = adx_hourly['DMN_14']
+
+        # spot and futures return
+        framework.df['spot_return'] = framework.df['close_spot'].pct_change().fillna(0)  # 替换'spot'为实际spot价格列名
+        framework.df['futures_return'] = framework.df[ticker].pct_change().fillna(0)
+
+
+
+
+        # MACD
         close = framework.df[ticker]
 
         fast_macd_parameter = {1:12,2:8,3:5}
         slow_macd_parameter = {1:26,2:17,3:15}
         macd_singal_parameter = {1:9,2:9,3:5}
 
-        # 計算 12-period EMA 和 26-period EMA
+        #  12-period EMA and 26-period EMA
         ema_fast_12 = close.ewm(span=fast_macd_parameter[1], adjust=False).mean()
         ema_slow_26 = close.ewm(span=slow_macd_parameter[1], adjust=False).mean()
 
-        # MACD 線 = ema_fast - ema_slow
+        # MACD line = ema_fast - ema_slow
         framework.df["MACD_12_26_9"] = ema_fast_12 - ema_slow_26
 
-        # 訊號線 = MACD 的 9-period EMA
+        # singal line = MACD  9-period EMA
         framework.df["MACD_signal_12_26_9"] = framework.df["MACD_12_26_9"].ewm(span=macd_singal_parameter[1], adjust=False).mean()
 
-        # 直方圖 = MACD - 訊號線
+        # histogram = MACD - singal line
         framework.df["MACD_hist_12_26_9"] = framework.df["MACD_12_26_9"] - framework.df["MACD_signal_12_26_9"]
+        
 
         #Drop NaN
         framework.df.dropna(inplace=True)
 
+    #============================================================================================================================
+    # Liquidation Check - Perpetual Futures (Bybit/Binance/OKX compatible)
+    #============================================================================================================================
+    def check_liquidation(self, framework, ticker, index):
+        """
+        Check if the current bar's High/Low has triggered liquidation.
+        Uses the exact leverage that was applied when the position was opened.
+        """
+        pos = framework.df.loc[index, ticker + '_holding_position']
+        if pos == 0:
+            return False, framework.df.loc[index, ticker]   # No position → no liquidation
+
+        # Retrieve the leverage used when this position was originally opened
+        open_leverage = framework.df.loc[index, ticker + '_open_leverage']
+        if pd.isna(open_leverage) or open_leverage <= 1:
+            open_leverage = 5   # Fallback for legacy positions
+
+        avg_price = framework.df.loc[index, ticker + '_average_cost']
+        mmr       = self.maintenance_margin_rate          # Maintenance Margin Rate (e.g. 0.005 = 0.5%)
+
+        if pos > 0:  # === Long position ===
+            # Official simplified liquidation price formula (2025)
+            liq_price = avg_price * (1 - (1 - mmr) / open_leverage)
+            
+            if framework.df.loc[index, 'Low'] <= liq_price:   # Wicked down to or below liquidation price
+                return True, liq_price
+
+        elif pos < 0:  # === Short position ===
+            liq_price = avg_price * (1 + (1 - mmr) / open_leverage)
+            
+            if framework.df.loc[index, 'High'] >= liq_price:  # Wicked up to or above liquidation price
+                return True, liq_price
+
+        return False, framework.df.loc[index, ticker]   # No liquidation this bar
+    
+
+#============================================================================================================================
+# Next
+#============================================================================================================================
 
     def next(self, ticker, framework, index):
         current_index = framework.df.index.get_loc(index)
@@ -84,16 +145,33 @@ class Strategy:
 
         last_index = framework.df.index[current_index - 1]
         last2_index = framework.df.index[current_index - 2]
+        last3_index = framework.df.index[current_index - 3]
         last4_index = framework.df.index[current_index - 4]
+        last5_index = framework.df.index[current_index - 5]
+        last6_index = framework.df.index[current_index - 6]
         last9_index = framework.df.index[current_index - 9]
+        last10_index = framework.df.index[current_index - 10]
+        last12_index = framework.df.index[current_index - 12]
+        last13_index = framework.df.index[current_index - 13]
         last14_index = framework.df.index[current_index - 14]
-
+        last15_index = framework.df.index[current_index - 15]
+        last17_index = framework.df.index[current_index - 17]
+        last19_index = framework.df.index[current_index - 19]
+        last20_index = framework.df.index[current_index - 20]
+        last21_index = framework.df.index[current_index - 21]
+        last23_index = framework.df.index[current_index - 23]
+        last25_index = framework.df.index[current_index - 25]
+        last49_index = framework.df.index[current_index - 49]
+        last73_index = framework.df.index[current_index - 73]
+        last97_index = framework.df.index[current_index - 97]
+        last121_index = framework.df.index[current_index - 121]
 
         
         # periouvs data
         framework.df.loc[index, 'Maintenance_Margin'] = framework.df.loc[last_index, 'Maintenance_Margin']
         framework.df.loc[index, ticker + '_holding_position'] = framework.df.loc[last_index, ticker + '_holding_position']
         framework.df.loc[index, ticker + '_initial_margin'] = framework.df.loc[last_index, ticker + '_initial_margin']
+        framework.df.loc[index, ticker + '_open_leverage'] = framework.df.loc[last_index, ticker + '_open_leverage']
         framework.df.loc[index, ticker + '_long_trade'] = framework.df.loc[last_index, ticker + '_long_trade']
         framework.df.loc[index, ticker + '_long_win'] = framework.df.loc[last_index, ticker + '_long_win']
         framework.df.loc[index, ticker + '_long_win_rate'] = framework.df.loc[last_index, ticker + '_long_win_rate']
@@ -116,24 +194,50 @@ class Strategy:
                     current_price = framework.df.loc[index, ticker]
                     current_high = framework.df.loc[index, 'High']
                     current_low = framework.df.loc[index, 'Low']
-                    if framework.df.loc[index, ticker + '_holding_position'] > 0:  # Long 持仓
-                        # 更新 best_price 为持仓期间最高价
+                    if framework.df.loc[index, ticker + '_holding_position'] > 0:  
                         best_price = max(best_price, current_price)
                         highest_high = max(highest_high, current_high)
                         
-                    elif framework.df.loc[index, ticker + '_holding_position'] < 0:  # Short 持仓
+                    elif framework.df.loc[index, ticker + '_holding_position'] < 0: 
                         best_price = min(best_price, current_price)
                         lowest_low = min(lowest_low, current_low)
                     
                     framework.df.loc[index, f'{ticker}_best_price'] = best_price
                     framework.df.loc[index, f'{ticker}_highest_high'] = highest_high
                     framework.df.loc[index, f'{ticker}_lowest_low'] = lowest_low
+
+
+
+        is_liq, exec_price = self.check_liquidation(framework, ticker, index)
+        if is_liq:
+            holding = abs(framework.df.loc[index, ticker + '_holding_position'])
+            action = -1 if framework.df.loc[index, ticker + '_holding_position'] > 0 else 1
+            
+            framework.close_position(index, ticker, exec_price, holding,
+                                action_signal=action, strategy_type='LIQUIDATED')
+            
+            framework.df.loc[index, 'force_close_out'] = 1
+            # Liquidation fee
+            framework.df.loc[index, 'Total_equity'] = max(10, framework.df.loc[index, 'Total_equity'] * 0.05)
+            
+            # Update position info after liquidation
+            framework.update_position_info(index, ticker)
+            return
+
+        
+
     
         adx = framework.df.loc[last_index, 'ADX']
         atr = framework.df.loc[last_index, 'ATR_14']
 
+        bb_width = framework.df.loc[last_index, 'BB_width']
 
-        contract_multiplier = 5
+        num = 10
+
+        num -= int(atr/100)
+
+
+        leverage = 5
         
         # current market data
         total_equity = framework.df.loc[last_index, 'Total_equity']
@@ -150,11 +254,10 @@ class Strategy:
         prev_10_price = framework.df.loc[last9_index:last_index, ticker]
         prev_15_price = framework.df.loc[last14_index:last_index, ticker]
         current_open = framework.df.loc[index, 'Open']
-
         
         # current position data
         best_price = framework.df.loc[last_index, f'{ticker}_best_price']
-        initial_margin = current_open/contract_multiplier
+        margin_per_contract = current_open/leverage
         average_cost = framework.df.loc[last_index, ticker + '_average_cost']
         strategy = framework.df.loc[last_index, 'trading_strategy']
         holding_position = framework.df.loc[last_index, ticker + '_holding_position']
@@ -177,20 +280,17 @@ class Strategy:
         macd_12_26_9_up_cross = macd_12_26_9 > macd_signal_12_26_9 and last_macd_12_26_9 < last_macd_signal_12_26_9
         macd_12_26_9_down_cross = macd_12_26_9 < macd_signal_12_26_9 and last_macd_12_26_9 > last_macd_signal_12_26_9
 
+        
+
+        # filter
+
 
         # trade quantity 
-        buy_qty = False
-
-        if  framework.df.loc[last_index, ticker + '_holding_position'] == 0 and atr < last_price*0.03:
-            if atr < last_price*0.01:
-                buy_qty = int((total_equity*0.3)/initial_margin)
-            else:
-                buy_qty = int((total_equity*0.7)/initial_margin)
-
+        buy_qty = int((total_equity*0.7)/margin_per_contract)
 
         #Trading condition
         #Open  
-        basic_open_condition = framework.df.loc[last_index, 'Cash'] > initial_margin*(buy_qty+abs(framework.df.loc[last_index, ticker + '_holding_position'])) and buy_qty != False
+        basic_open_condition = framework.df.loc[last_index, 'Cash'] > margin_per_contract*(buy_qty+abs(framework.df.loc[last_index, ticker + '_holding_position'])) and buy_qty != False
         #long 
 
 
@@ -198,10 +298,7 @@ class Strategy:
         basic_close_condition = framework.df.loc[last_index, ticker + '_holding_position'] != 0
 
 
-        # close 
-
-        # force close
-        force_close_condition = framework.df.loc[last_index, ticker + '_holding_position'] != 0 and framework.df.loc[last_index, 'Total_equity']  <=  last_price*framework.df.loc[last_index, ticker + '_holding_position']*self.maintenance_margin_rate
+        # Close 
 
         # stop profit or loss
         stop_profit_condition = False
@@ -238,15 +335,18 @@ class Strategy:
             framework.df.loc[index, 'trend_strength'] = 2
 
 
-        #long singal
-        open_long_con = {1:rsi <30,
-                         2: rsi > 50,
-                         3: macd_12_26_9_up_cross,
 
+        #long singal
+        open_long_con = {1: rsi < 30,
+                         2: rsi > 50,
+                         3: macd_12_26_9_up_cross
                          }
+
+
+                        
         
 
-        close_long_con = {1: rsi > 70 ,
+        close_long_con = {1: rsi > 70,
                           2: rsi < 50,
                           3: macd_12_26_9_down_cross,
                           }
@@ -255,12 +355,14 @@ class Strategy:
 
 
         #short singal
-        open_short_con = {1: macd_12_26_9_down_cross , 
+        open_short_con = {
+                          1: macd_12_26_9_down_cross , 
 
                           }
 
         
-        close_short_con = {1: macd_12_26_9_up_cross
+        close_short_con = {
+                           1: macd_12_26_9_up_cross < 0
                            }
     
 
@@ -268,57 +370,30 @@ class Strategy:
         #Trade
         #==========================================================================================================
 
-        # Strategy type
-
-        strategy_type = {1: 'Classic_RSI',
-                        2: 'Sentiment-driven RSI',
-                        3: 'Classic_MACD'}
-
-
         # close position
 
         closed_positon = False
 
         trade_price = current_open
 
+        strategy_type = {1: 'Classic RSI ',
+                        2: 'Sentiment-driven RSI',
+                        3: 'Classic MACD'}
+
         if basic_close_condition and closed_positon == False:
             if framework.df.loc[last_index, ticker + '_holding_position'] > 0: 
-                if  framework.df.loc[last_index, 'trend'] == 1 and framework.df.loc[last_index, 'trend'] == -1  :
-                    framework.close_position(index, ticker, trade_price, holding_position, action_signal=-1, strategy_type = 'trend change')
+
+                if (strategy == strategy_type[self.test_window] )  and close_long_con[self.test_window] :
+                    framework.close_position(index, ticker, trade_price, holding_position, action_signal=-1, strategy_type = 'kdj_long_close')
                     closed_positon = True
-
-                elif (strategy == strategy_type[self.test_window] )  and close_long_con[self.test_window]   :
-                    framework.close_position(index, ticker, trade_price, holding_position, action_signal=-1, strategy_type = 'close')
-                    closed_positon = True
-
-
-                elif (strategy == 'macd_long_open' )  and (close_long_con[1]) and last_price > average_cost + atr:
-                    framework.close_position(index, ticker, trade_price, holding_position, action_signal=-1, strategy_type = 'macd_long_close')
-                    framework.df.loc[index, 'open_macd_hist'] = 0
-                    framework.df.loc[index, 'open_j_line'] = 0
-                    closed_positon = True
-
-
 
 
 
             if framework.df.loc[last_index, ticker + '_holding_position'] < 0: 
-                if (strategy == 'short')  and (close_short_con [0]) :  
+                if (strategy == 'short')  and (close_short_con [1]) :  
                     framework.close_position(index, ticker, trade_price, holding_position, action_signal=1, strategy_type = 'close short position')
-                    framework.df.loc[index, 'open_macd_hist'] = 0
-                    framework.df.loc[index, 'open_j_line'] = 0
                     closed_positon = True
 
-
-
-        if force_close_condition and closed_positon == False:
-            if framework.df.loc[last_index, ticker + '_holding_position'] > 0: 
-                framework.close_position(index, ticker, trade_price, holding_position, action_signal=-1, strategy_type = 'force close out')
-                closed_positon = True
-
-            if framework.df.loc[last_index, ticker + '_holding_position'] < 0: 
-                framework.close_position(index, ticker, trade_price, holding_position, action_signal=1, strategy_type = 'force close out')
-                closed_positon = True
 
         if stop_profit_condition and closed_positon == False:
             if framework.df.loc[last_index, ticker + '_holding_position'] > 0 : 
@@ -329,8 +404,7 @@ class Strategy:
                 framework.close_position(index, ticker, trade_price, holding_position, action_signal=1, strategy_type = 'stop profit')
                 closed_positon = True
 
-
-            
+                
         
         if stop_loss_condition and closed_positon == False:
             if framework.df.loc[last_index, ticker + '_holding_position'] > 0: 
@@ -346,19 +420,18 @@ class Strategy:
         if basic_open_condition  and framework.df.loc[last_index, ticker + '_close_signal'] == 0 : 
             # Long  
 
-            if framework.df.loc[last_index, ticker + '_holding_position'] < 1:                
+            if framework.df.loc[last_index, ticker + '_holding_position'] < 1:
+                
                 
                 if framework.df.loc[last_index, 'trend_strength'] < 3:
                     if  open_long_con[self.test_window] :
-                        framework.open_position(index, ticker, trade_price, high, low, buy_qty, direction='long', strategy_type = strategy_type[self.test_window], multiplier = contract_multiplier)
+                        framework.open_position(index, ticker, trade_price, high, low, buy_qty, direction='long', strategy_type = strategy_type[self.test_window], leverage = leverage)
 
             # short
             if framework.df.loc[last_index, ticker + '_holding_position'] < 1:
+                    if open_short_con[1] and None: # long only 
+                        framework.open_position(index, ticker, trade_price, high, low, buy_qty, direction='short', strategy_type = 'short', leverage = leverage)
 
-                    if open_short_con[1]  and None : 
-                        framework.open_position(index, ticker, trade_price, high, low, buy_qty, direction='short', strategy_type = 'short', multiplier = contract_multiplier)
-                        framework.df.loc[index, 'open_macd_hist'] = macd_hist_12_26_9
-                        framework.df.loc[index, 'open_j_line'] = j_line
 
 
 
@@ -385,7 +458,7 @@ best_sharpe = float('-inf')
 
 ratios = np.arange(1,4,1)
 
-csv_file = 'eth_hourly.csv'
+csv_file = 'eth_merged_data.csv'
 start_date = '2024-11-28 00:00:00'
 end_date = '2025-08-31 23:00:00'
 
@@ -506,6 +579,11 @@ if best_sharpe:
 optimized_df.to_csv('backtest_result.csv', index_label="Date")
 
 optimized_df.index = pd.to_datetime(optimized_df.index, format="%Y-%m-%d %H:%M:%S", errors='coerce')
+
+if optimized_df.index.isna().any():
+    print("Warning: Some index values could not be converted to datetime. Check the data:")
+    print(optimized_df.index[optimized_df.index.isna()])
+
 
 if optimized_df.index.isna().any():
     print("Warning: Some index values could not be converted to datetime. Check the data:")
