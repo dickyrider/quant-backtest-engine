@@ -21,3 +21,5 @@ Designed with production details in mind: slippage, fees, maintenance margin, fo
 
 ```bash
 python equity_curve_dashboard.py
+
+*If you're interested in detailed usage instructions, feel free to email me at dickyrider@gmail.com.
