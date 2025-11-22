@@ -3,20 +3,20 @@
 ```text
 quant_backtest_engine/                      # Project root
 ├── backtest/                               # Core package (pip install -e .)
-│   ├── __init__.py                         # Makes `import backtest` work
+│   ├── __init__.py                         
 │   ├── engine.py                           # Main backtesting framework + liquidation logic
 │   ├── strategy.py                         # Your full Strategy class (with add_reference_data)
-│   └── analysis.py                         # All metrics (Sharpe, MDD, monthly correlation, etc.)
-├── examples/                               # Ready-to-run examples
-│   ├── run_backtest.py                     # Single strategy quick test
-│   └── optimize_parameters.py              # Multi-parameter optimization loop
-├── dashboard/                              # Interactive visualization
-│   └── equity_curve_dashboard.py           # Dash app — compare all equity curves + signals
-├── data/                                   # Example dataset
+│   └── analysis.py                         
+├── examples/                              
+│   ├── run_backtest.py                     
+│   └── optimize_parameters.py             
+├── dashboard/                             
+│   └── equity_curve_dashboard.py           
+├── data/                                   
 │   └── eth_merged_data.csv
 ├── requirements.txt
 └── README.md
-```text
+```
 
 
 # Crypto Quant Engine – Production-Grade Event-Driven Backtesting Framework
