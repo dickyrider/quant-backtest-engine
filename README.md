@@ -2,8 +2,7 @@
 
 ```text
 quant_backtest_engine/                      # Project root
-├── backtest/                               # Core package (pip install -e .)
-│   ├── __init__.py                         
+├── backtest/                               # Core package (pip install -e .)                       
 │   ├── engine.py                           # Main backtesting framework + liquidation logic
 │   ├── strategy.py                         # Your full Strategy class (with add_reference_data)
 │   └── analysis.py                         
