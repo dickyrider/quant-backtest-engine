@@ -1,11 +1,37 @@
+## Project Structure
+
+quant_backtest_engine/                  # Project root
+├── backtest/                               # Core package (pip install -e .)
+│   ├── init.py                         # Makes import backtest work
+│   ├── engine.py                           # Main backtesting framework + liquidation logic
+│   ├── strategy.py                         # Your full Strategy class (with add_reference_data)
+│   └── analysis.py                         # All metrics (Sharpe, MDD, monthly correlation, etc.)
+├── examples/                               # Ready-to-run examples
+│   ├── run_backtest.py                     # Single strategy quick test
+│   └── optimize_parameters.py              # Multi-parameter optimization loop
+├── dashboard/                              # Interactive visualization
+│   └── equity_curve_dashboard.py           # Dash app — compare all equity curves + signals
+├── data/                                   # Example dataset
+│   └── eth_merged_data.csv
+├── requirements.txt
+└── README.md
+
 # Crypto Quant Engine – Production-Grade Event-Driven Backtesting Framework
 
 <p align="center">
   <img src="dashboard-preview.jpeg" alt="Interactive Dashboard Preview" width="100%">
 </p>
 
-A from-scratch, event-driven backtesting engine built and battle-tested with real Binance perpetual futures data (ETHUSDT hourly, Nov 2024 – Aug 2025).  
-Designed with production details in mind: slippage, fees, maintenance margin, forced liquidation, dynamic ATR stops, position sizing, etc.
+A fast, event-driven backtesting framework specially designed for **crypto perpetual contracts** (USDT-margined), with full leverage, liquidation and risk management simulation.
+
+## 🚀 Core Features
+
+- Event-driven, bar-by-bar precise simulation (liquidation checked on High/Low)  
+- Full Bybit/Binance-style perpetual mechanics: leverage up to 125x, initial/maintenance margin, accurate bankruptcy price calculation  
+- Realistic taker fee (0.05%) and automatic liquidation (equity floors at $10)  
+- Super flexible indicator system — add any on-chain or external data in 2 lines  
+- Multi-parameter optimization + one-click Dash comparison dashboard  
+- Complete metrics suite: Sharpe, MaxDD, monthly correlation, P/L ratio, win rate, etc.
 
 ### Real Performance – Three Classic Strategies Head-to-Head
 
